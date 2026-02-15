@@ -37,7 +37,7 @@ def find_executable(cmd: str) -> str | None:
             return candidate
     return None
 
-def run_command(argv: list[str], infile: str | None = None, outfile: str | None = None) -> None:
+def run_command(argv: list[str], infile: str | None = None, outfile: str | None = None, background: bool = False) -> None:
     prog = argv[0]
     exe = find_executable(prog)
     if exe is None:
@@ -64,11 +64,13 @@ def run_command(argv: list[str], infile: str | None = None, outfile: str | None 
             os._exit(1)
     else:
         #parent wait for child
+        if background:
+            return
         _, status = os.waitpid(pid, 0)
         if os.WIFEXITED(status):
             code = os.WEXITSTATUS(status)
             if code != 0:
-                print(f"Program terminated with exit code {code}.", file=sys.stdout)
+                print(f"Program terminated with exit code {code}.", file=sys.stderr)
         elif os.WIFSIGNALED(status):
             #if killed by signal treat as non zero
             sig = os.WTERMSIG(status)
@@ -115,7 +117,7 @@ def split_pipeline(tokens: list[str]) -> list[list[str]]:
     segs.append(cur)
     return segs
 
-def run_pipeline(segments: list[list[str]]) -> None:
+def run_pipeline(segments: list[list[str]], background : bool = False) -> None:
     """
     list of token list, each segement may contain < or >
     rule: allow < only on first segment, > only on last segment 
@@ -200,7 +202,9 @@ def run_pipeline(segments: list[list[str]]) -> None:
     #after forking all, parent closes any remaining read end
     if prev_read is not None:
         os.close(prev_read)
-
+    
+    if background:
+        return
     #wait for all children; report exit code of the last command
     last_status = 0
     for pid in pids:
@@ -213,11 +217,32 @@ def run_pipeline(segments: list[list[str]]) -> None:
             print(f"Program terminated with exit code {code}.", file=sys.stderr)
     elif os.WIFSIGNALED(last_status):
         sig = os.WTERMSIG(last_status)
-        print(f"Program terminated with exit code {128 + sig}.", file=sys.stderr)
+        print(f"Program terminated with exit code {128 + sig}.", file=sys.stdout)
+
+def reap_background() -> None:
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return #no children
+        if pid ==0:
+            return #none finished yet
+
+def logical_pwd_update(target: str) -> None:
+    old = os.environ.get("PWD", os.getcwd())
+
+    if os.path.isabs(target):
+        new = os.path.normpath(target)
+    else:
+        new = os.path.normpath(os.path.join(old, target))
+
+    os.environ["PWD"] = new
 
 def main():
 
     while True:
+        reap_background()
+
         try:
             prompt = os.environ.get("PS1", "$ ")
             line = input(prompt)
@@ -238,10 +263,17 @@ def main():
         if not tokens:
             continue
 
+        background = False
+        if tokens and tokens[-1] == "&":
+            background = True
+            tokens = tokens[:-1]
+            if not tokens:
+                continue
+
         if "|" in tokens:
             try:
                 segement = split_pipeline(tokens)
-                run_pipeline(segement)
+                run_pipeline(segement, background=background)
             except ValueError as e:
                 print(f"Syntax error: {e}", file=sys.stdout)
             continue
@@ -250,7 +282,7 @@ def main():
         try:
             argv, infile, outfile = parse_redirections(tokens)
         except ValueError as e:
-            print(f"syntax error: {e}", file=sys.stdout)
+            print(f"Syntax error: {e}", file=sys.stdout)
             continue
 
         if not argv:
@@ -261,11 +293,12 @@ def main():
             target = argv[1] if len(argv) > 1 else os.environ.get("HOME", "/")
             try:
                 os.chdir(target)
+                logical_pwd_update(target)
             except OSError as e:
                 print(f"cd: {e}", file=sys.stdout)
             continue
 
-        run_command(argv, infile=infile, outfile=outfile)
+        run_command(argv, infile=infile, outfile=outfile, background=background)
 
 if __name__ == "__main__":
     main()
