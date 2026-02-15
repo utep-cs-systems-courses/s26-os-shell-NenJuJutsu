@@ -58,8 +58,20 @@ def main():
 
         if line == "exit":
             break
+        
+        #simple tokenization
+        argv = line.split()
 
-        #print(f"debug: got command: {line}")
+        #built in CD
+        if argv[0] == "cd":
+            target = argv[1] if len(argv) > 1 else os.environ.get("HOME", "/")
+            try:
+                os.chdir(target)
+            except OSError as e:
+                print(f"cd: {e}", file=sys.stdout)
+            continue
+
+        run_command(argv)
 
 if __name__ == "__main__":
     main()
