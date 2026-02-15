@@ -4,6 +4,25 @@ import os
 import sys
 import re
 
+_TOKEN_RE = re.compile(r'''(?x)
+\s*(
+    "(?:\\.|[^"\\])*"   |   #double quotes
+    '(?:\\.|[^'\\])*'   |   #single quotes
+    [^\s]+                  #unquoted
+    )
+''')
+
+def split_cmdline(s: str) -> list[str]:
+    tokens = [m.group(1) for m in _TOKEN_RE.finditer(s)]
+    out = []
+    for t in tokens:
+        if len(t) >= 2 and ((t[0] == '"' and t[-1] == '"')  or (t[0] == "'" and t[-1] == "'")):
+            t = t[1:-1] #strip surrounding quotes
+        #minimal unescape for \" and \'
+        t = t.replace(r'\"', '"').replace(r"\'", "'").replace(r"\\", "\\")
+        out.append(t)
+    return out
+
 def find_executable(cmd: str) -> str | None:
     #if command includes a slash, treat it as a path
     if "/" in cmd:
@@ -60,7 +79,7 @@ def main():
             break
         
         #simple tokenization
-        argv = line.split()
+        argv = split_cmdline(line)
 
         #built in CD
         if argv[0] == "cd":
