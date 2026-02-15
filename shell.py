@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/python3
+#!/usr/bin/env python3
 
 import os
 import sys
@@ -26,7 +26,7 @@ def split_cmdline(s: str) -> list[str]:
 def find_executable(cmd: str) -> str | None:
     #if command includes a slash, treat it as a path
     if "/" in cmd:
-        return cmd if os.access(cmd, os.X_OK) else None
+        return cmd if os.path.isfile(cmd) and os.access(cmd, os.X_OK) else None
 
     path = os.environ.get("PATH", "")
     for directory in path.split(":"):
@@ -53,7 +53,7 @@ def run_command(argv: list[str]) -> None:
             os._exit(127)
     else:
         #parent wait for child
-        _, status = os.wait()
+        _, status = os.waitpid(pid, 0)
         if os.WIFEXITED(status):
             code = os.WEXITSTATUS(status)
             if code != 0:
@@ -64,22 +64,27 @@ def run_command(argv: list[str]) -> None:
             print(f"Program terminated with exit code {128 + sig}.", file=sys.stdout)
 
 def main():
+
     while True:
         try:
             prompt = os.environ.get("PS1", "$ ")
             line = input(prompt)
         except EOFError:
-            print()
+            if sys.stdin.isatty():
+                print()
             break
 
         if not line.strip():
             continue
-
+        
+        line = line.strip()
         if line == "exit":
             break
         
         #simple tokenization
         argv = split_cmdline(line)
+        if not argv:
+            continue
 
         #built in CD
         if argv[0] == "cd":
