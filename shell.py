@@ -99,6 +99,122 @@ def parse_redirections(tokens: list[str]) -> tuple[list[str], str | None, str | 
 
     return argv, infile, outfile
 
+def split_pipeline(tokens: list[str]) -> list[list[str]]:
+    segs: list[list[str]] = []
+    cur: list[str] = []
+    for t in tokens:
+        if t == "|":
+            if not cur:
+                raise ValueError("missing command before |")
+            segs.append(cur)
+            cur = []
+        else:
+            cur.append(t)
+    if not cur:
+        raise ValueError("missing command after |")
+    segs.append(cur)
+    return segs
+
+def run_pipeline(segments: list[list[str]]) -> None:
+    """
+    list of token list, each segement may contain < or >
+    rule: allow < only on first segment, > only on last segment 
+    """
+    n = len(segments)
+    pids: list[int] = []
+    prev_read: int | None = None
+
+    for i in range(n):
+        #parse redirections per segment 
+        argv, infile, outfile = parse_redirections(segments[i])
+        if not argv:
+            raise ValueError("empty command in pipeline")
+        
+        if i != 0 and infile is not None:
+            raise ValueError("input redirection only allowed on first command of pipeline")
+        if i != n - 1 and outfile is not None:
+            raise ValueError("output redirection only allowed on last command of pipeline")
+
+        #set up pipe to next command unless last
+        if i != n - 1:
+            r, w = os.pipe()
+        else:
+            r, w = None, None
+
+        pid = os.fork()
+        if pid == 0:
+            #child 
+            try:
+                #if there is a previous pipe connect to stdin
+                if prev_read is not None:
+                    os.dup2(prev_read, 0)
+            
+                #if there is a next pipe connect stdout to it
+                if w is not None:
+                    os.dup2(w, 1)
+
+                #apply < on first command
+                if infile is not None:
+                    fd_in = os.open(infile, os.O_RDONLY)
+                    os.dup2(fd_in, 0)
+                    os.close(fd_in)
+
+                #apply > on last command
+                if outfile is not None:
+                    fd_out = os.open(outfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+                    os.dup2(fd_out, 1)
+                    os.close(fd_out)
+
+                #close fd's we dont need
+                if prev_read is not None:
+                    os.close(prev_read)
+                if r is not None:
+                    os.close(r)
+                if w is not None:
+                    os.close(w)
+
+                #exec
+                exe = find_executable(argv[0])
+                if exe is None:
+                    print(f"{argv[0]}: command not found", file=sys.stderr)
+                    os._exit(127)
+
+                os.execve(exe, argv, os.environ)
+
+            except OSError as e:
+                print(e, file=sys.stderr)
+                os._exit(1)
+
+        else:
+            #parent
+            pids.append(pid)
+
+            #parent closes ends not needed
+            if prev_read is not None:
+                os.close(prev_read)
+            if w is not None:
+                os.close(w)
+
+            prev_read = r #next child will read from here
+
+    #after forking all, parent closes any remaining read end
+    if prev_read is not None:
+        os.close(prev_read)
+
+    #wait for all children; report exit code of the last command
+    last_status = 0
+    for pid in pids:
+        _, status = os.waitpid(pid, 0)
+        last_status = status
+
+    if os.WIFEXITED(last_status):
+        code = os.WEXITSTATUS(last_status)
+        if code != 0:
+            print(f"Program terminated with exit code {code}.", file=sys.stderr)
+    elif os.WIFSIGNALED(last_status):
+        sig = os.WTERMSIG(last_status)
+        print(f"Program terminated with exit code {128 + sig}.", file=sys.stderr)
+
 def main():
 
     while True:
@@ -122,6 +238,14 @@ def main():
         if not tokens:
             continue
 
+        if "|" in tokens:
+            try:
+                segement = split_pipeline(tokens)
+                run_pipeline(segement)
+            except ValueError as e:
+                print(f"Syntax error: {e}", file=sys.stdout)
+            continue
+
         #parse < and >
         try:
             argv, infile, outfile = parse_redirections(tokens)
@@ -139,7 +263,6 @@ def main():
                 os.chdir(target)
             except OSError as e:
                 print(f"cd: {e}", file=sys.stdout)
-                os._exit(1)
             continue
 
         run_command(argv, infile=infile, outfile=outfile)
