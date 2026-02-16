@@ -139,7 +139,7 @@ def run_pipeline(segments: list[list[str]], background : bool = False) -> None:
 
         #set up pipe to next command unless last
         if i != n - 1:
-            r, w = os.pipe()
+          r, w = os.pipe()
         else:
             r, w = None, None
 
